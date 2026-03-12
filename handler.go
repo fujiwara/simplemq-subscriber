@@ -1,0 +1,146 @@
+package subscriber
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log/slog"
+	"maps"
+	"os/exec"
+	"strings"
+	"time"
+
+	"github.com/fujiwara/mqbridge"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+)
+
+// Handler matches messages by headers and executes a command.
+type Handler struct {
+	name           string
+	match          map[string]string
+	command        []string
+	timeout        time.Duration
+	blocking       bool
+	maxConcurrency int
+	sem            chan struct{} // semaphore for non-blocking concurrency control
+	logger         *slog.Logger
+	metrics        *Metrics
+	attrs          attribute.Set
+}
+
+// NewHandler creates a Handler from config.
+func NewHandler(cfg HandlerConfig, logger *slog.Logger, m *Metrics) *Handler {
+	h := &Handler{
+		name:           cfg.Name,
+		match:          cfg.Match,
+		command:        cfg.Command,
+		timeout:        cfg.GetTimeout(),
+		blocking:       cfg.Blocking,
+		maxConcurrency: cfg.GetMaxConcurrency(),
+		logger:         logger.With("handler", cfg.Name),
+		metrics:        m,
+		attrs: attribute.NewSet(
+			attribute.String("handler", cfg.Name),
+		),
+	}
+	if !h.blocking {
+		h.sem = make(chan struct{}, h.maxConcurrency)
+	}
+	return h
+}
+
+// Match returns true if all match conditions are satisfied by the message headers (exact match).
+func (h *Handler) Match(msg *mqbridge.Message) bool {
+	if msg.Headers == nil {
+		return false
+	}
+	for key, want := range h.match {
+		got, ok := msg.Headers[key]
+		if !ok || got != want {
+			return false
+		}
+	}
+	return true
+}
+
+// Execute runs the command with the message body as stdin.
+// Returns a response message with stdout as body and original headers preserved.
+func (h *Handler) Execute(ctx context.Context, msg *mqbridge.Message) (*mqbridge.Message, error) {
+	cmdCtx, cancel := context.WithTimeout(ctx, h.timeout)
+	defer cancel()
+
+	start := time.Now()
+
+	cmd := exec.CommandContext(cmdCtx, h.command[0], h.command[1:]...)
+	cmd.Stdin = bytes.NewReader(msg.Body)
+
+	// Set headers as environment variables
+	cmd.Env = headersToEnv(msg.Headers)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+
+	duration := time.Since(start).Seconds()
+	h.metrics.commandDuration.Record(ctx, duration, metric.WithAttributeSet(h.attrs))
+
+	if stderr.Len() > 0 {
+		h.logger.Info("command stderr", "stderr", stderr.String())
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("command failed: %w", err)
+	}
+
+	// Build response message with original headers preserved
+	result := &mqbridge.Message{
+		Body:    stdout.Bytes(),
+		Headers: copyHeaders(msg.Headers),
+	}
+	return result, nil
+}
+
+// Acquire acquires a semaphore slot for non-blocking handlers.
+// Blocks if max_concurrency is reached.
+func (h *Handler) Acquire(ctx context.Context) error {
+	if h.blocking {
+		return nil
+	}
+	select {
+	case h.sem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Release releases a semaphore slot for non-blocking handlers.
+func (h *Handler) Release() {
+	if h.blocking {
+		return
+	}
+	<-h.sem
+}
+
+// headersToEnv converts message headers to environment variables.
+// e.g. "rabbitmq.routing_key" -> "SIMPLEMQ_HEADER_RABBITMQ_ROUTING_KEY=value"
+func headersToEnv(headers map[string]string) []string {
+	env := make([]string, 0, len(headers))
+	for k, v := range headers {
+		envKey := "SIMPLEMQ_HEADER_" + strings.ToUpper(strings.NewReplacer(".", "_", "-", "_").Replace(k))
+		env = append(env, envKey+"="+v)
+	}
+	return env
+}
+
+func copyHeaders(src map[string]string) map[string]string {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	maps.Copy(dst, src)
+	return dst
+}

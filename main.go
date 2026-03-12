@@ -1,11 +1,10 @@
-package simplemq-subscriber
+package subscriber
 
 import (
 	"context"
-	"fmt"
 )
 
+// Run is the main entry point for the subscriber.
 func Run(ctx context.Context) error {
-	fmt.Println("simplemq-subscriber!")
-	return nil
+	return RunCLI(ctx)
 }

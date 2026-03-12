@@ -1,3 +1,3 @@
-package simplemq-subscriber
+package subscriber
 
 var Version = "v0.0.0"

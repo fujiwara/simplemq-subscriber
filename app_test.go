@@ -1,0 +1,397 @@
+package subscriber
+
+import (
+	"context"
+	"encoding/base64"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/fujiwara/mqbridge"
+	"github.com/fujiwara/simplemq-cli/localserver"
+	"github.com/sacloud/simplemq-api-go/apis/v1/message"
+)
+
+const testAPIKey = "test-api-key"
+
+type testSecuritySource struct {
+	token string
+}
+
+func (s *testSecuritySource) ApiKeyAuth(_ context.Context, _ message.OperationName) (message.ApiKeyAuth, error) {
+	return message.ApiKeyAuth{Token: s.token}, nil
+}
+
+func newTestSMQClient(t *testing.T, serverURL string) *message.Client {
+	t.Helper()
+	client, err := message.NewClient(serverURL, &testSecuritySource{token: testAPIKey})
+	if err != nil {
+		t.Fatalf("failed to create SimpleMQ client: %v", err)
+	}
+	return client
+}
+
+func sendTestMessage(t *testing.T, ctx context.Context, client *message.Client, queue string, msg *mqbridge.Message) {
+	t.Helper()
+	data, err := mqbridge.MarshalMessage(msg)
+	if err != nil {
+		t.Fatalf("failed to marshal message: %v", err)
+	}
+	encoded := base64.StdEncoding.EncodeToString(data)
+	_, err = client.SendMessage(ctx,
+		&message.SendRequest{Content: message.MessageContent(encoded)},
+		message.SendMessageParams{QueueName: message.QueueName(queue)},
+	)
+	if err != nil {
+		t.Fatalf("failed to send to SimpleMQ: %v", err)
+	}
+}
+
+func receiveTestMessage(t *testing.T, ctx context.Context, client *message.Client, queue string) *mqbridge.Message {
+	t.Helper()
+	for range 30 {
+		time.Sleep(100 * time.Millisecond)
+		res, err := client.ReceiveMessage(ctx, message.ReceiveMessageParams{
+			QueueName: message.QueueName(queue),
+		})
+		if err != nil {
+			continue
+		}
+		recvOK, ok := res.(*message.ReceiveMessageOK)
+		if !ok || len(recvOK.Messages) == 0 {
+			continue
+		}
+		decoded, err := base64.StdEncoding.DecodeString(string(recvOK.Messages[0].Content))
+		if err != nil {
+			t.Fatalf("failed to decode message: %v", err)
+		}
+		return mqbridge.UnmarshalMessage(decoded)
+	}
+	return nil
+}
+
+func uniqueName(prefix string) string {
+	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
+}
+
+func TestBlockingHandler(t *testing.T) {
+	srv := localserver.NewTestServer(localserver.Config{APIKey: testAPIKey})
+	defer srv.Close()
+
+	reqQueue := uniqueName("req-blocking")
+	resQueue := uniqueName("res-blocking")
+
+	cfg := &Config{
+		SimpleMQ: SimpleMQConfig{APIURL: srv.TestURL()},
+		Request: RequestConfig{
+			Queue: reqQueue, APIKey: testAPIKey,
+			PollingInterval: "100ms",
+		},
+		Response: ResponseConfig{
+			Queue: resQueue, APIKey: testAPIKey,
+		},
+		Handlers: []HandlerConfig{
+			{
+				Name:     "echo",
+				Match:    map[string]string{"rabbitmq.routing_key": "echo"},
+				Command:  []string{"cat"},
+				Timeout:  "5s",
+				Blocking: true,
+			},
+		},
+	}
+
+	app, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	go app.Run(ctx)
+	time.Sleep(200 * time.Millisecond)
+
+	client := newTestSMQClient(t, srv.TestURL())
+
+	testBody := fmt.Sprintf("blocking-test-%d", time.Now().UnixNano())
+	sendTestMessage(t, ctx, client, reqQueue, &mqbridge.Message{
+		Body: []byte(testBody),
+		Headers: map[string]string{
+			"rabbitmq.routing_key": "echo",
+			"rabbitmq.exchange":    "test-exchange",
+		},
+	})
+
+	received := receiveTestMessage(t, ctx, client, resQueue)
+	if received == nil {
+		t.Fatal("expected response message, got nil")
+	}
+	if string(received.Body) != testBody {
+		t.Errorf("body: expected %q, got %q", testBody, string(received.Body))
+	}
+	// Headers should be preserved
+	if received.Headers["rabbitmq.routing_key"] != "echo" {
+		t.Errorf("routing_key: expected %q, got %q", "echo", received.Headers["rabbitmq.routing_key"])
+	}
+	if received.Headers["rabbitmq.exchange"] != "test-exchange" {
+		t.Errorf("exchange: expected %q, got %q", "test-exchange", received.Headers["rabbitmq.exchange"])
+	}
+}
+
+func TestNonBlockingHandler(t *testing.T) {
+	srv := localserver.NewTestServer(localserver.Config{APIKey: testAPIKey})
+	defer srv.Close()
+
+	reqQueue := uniqueName("req-nonblocking")
+	resQueue := uniqueName("res-nonblocking")
+
+	cfg := &Config{
+		SimpleMQ: SimpleMQConfig{APIURL: srv.TestURL()},
+		Request: RequestConfig{
+			Queue: reqQueue, APIKey: testAPIKey,
+			PollingInterval: "100ms",
+		},
+		Response: ResponseConfig{
+			Queue: resQueue, APIKey: testAPIKey,
+		},
+		Handlers: []HandlerConfig{
+			{
+				Name:           "upper",
+				Match:          map[string]string{"rabbitmq.routing_key": "upper"},
+				Command:        []string{"tr", "a-z", "A-Z"},
+				Timeout:        "5s",
+				Blocking:       false,
+				MaxConcurrency: 3,
+			},
+		},
+	}
+
+	app, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	go app.Run(ctx)
+	time.Sleep(200 * time.Millisecond)
+
+	client := newTestSMQClient(t, srv.TestURL())
+
+	sendTestMessage(t, ctx, client, reqQueue, &mqbridge.Message{
+		Body: []byte("hello"),
+		Headers: map[string]string{
+			"rabbitmq.routing_key": "upper",
+		},
+	})
+
+	received := receiveTestMessage(t, ctx, client, resQueue)
+	if received == nil {
+		t.Fatal("expected response message, got nil")
+	}
+	if string(received.Body) != "HELLO" {
+		t.Errorf("body: expected %q, got %q", "HELLO", string(received.Body))
+	}
+}
+
+func TestNoMatchingHandler(t *testing.T) {
+	srv := localserver.NewTestServer(localserver.Config{APIKey: testAPIKey})
+	defer srv.Close()
+
+	reqQueue := uniqueName("req-nomatch")
+	resQueue := uniqueName("res-nomatch")
+
+	cfg := &Config{
+		SimpleMQ: SimpleMQConfig{APIURL: srv.TestURL()},
+		Request: RequestConfig{
+			Queue: reqQueue, APIKey: testAPIKey,
+			PollingInterval: "100ms",
+		},
+		Response: ResponseConfig{
+			Queue: resQueue, APIKey: testAPIKey,
+		},
+		Handlers: []HandlerConfig{
+			{
+				Name:     "echo",
+				Match:    map[string]string{"rabbitmq.routing_key": "echo"},
+				Command:  []string{"cat"},
+				Blocking: true,
+			},
+		},
+	}
+
+	app, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	go app.Run(ctx)
+	time.Sleep(200 * time.Millisecond)
+
+	client := newTestSMQClient(t, srv.TestURL())
+
+	// Send message that doesn't match any handler
+	sendTestMessage(t, ctx, client, reqQueue, &mqbridge.Message{
+		Body: []byte("unmatched"),
+		Headers: map[string]string{
+			"rabbitmq.routing_key": "unknown",
+		},
+	})
+
+	// Wait a bit, then verify no response was sent
+	time.Sleep(500 * time.Millisecond)
+	received := receiveTestMessage(t, ctx, client, resQueue)
+	if received != nil {
+		t.Errorf("expected no response for unmatched message, got %q", string(received.Body))
+	}
+
+	// Verify the request message was deleted (dropped)
+	res, err := client.ReceiveMessage(ctx, message.ReceiveMessageParams{
+		QueueName: message.QueueName(reqQueue),
+	})
+	if err != nil {
+		t.Fatalf("failed to check request queue: %v", err)
+	}
+	recvOK, ok := res.(*message.ReceiveMessageOK)
+	if ok && len(recvOK.Messages) > 0 {
+		t.Error("expected request queue to be empty after drop")
+	}
+}
+
+func TestMultipleHandlers(t *testing.T) {
+	srv := localserver.NewTestServer(localserver.Config{APIKey: testAPIKey})
+	defer srv.Close()
+
+	reqQueue := uniqueName("req-multi")
+	resQueue := uniqueName("res-multi")
+
+	cfg := &Config{
+		SimpleMQ: SimpleMQConfig{APIURL: srv.TestURL()},
+		Request: RequestConfig{
+			Queue: reqQueue, APIKey: testAPIKey,
+			PollingInterval: "100ms",
+		},
+		Response: ResponseConfig{
+			Queue: resQueue, APIKey: testAPIKey,
+		},
+		Handlers: []HandlerConfig{
+			{
+				Name:     "echo",
+				Match:    map[string]string{"rabbitmq.routing_key": "echo"},
+				Command:  []string{"cat"},
+				Blocking: true,
+			},
+			{
+				Name:           "upper",
+				Match:          map[string]string{"rabbitmq.routing_key": "upper"},
+				Command:        []string{"tr", "a-z", "A-Z"},
+				Blocking:       false,
+				MaxConcurrency: 2,
+			},
+		},
+	}
+
+	app, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	go app.Run(ctx)
+	time.Sleep(200 * time.Millisecond)
+
+	client := newTestSMQClient(t, srv.TestURL())
+
+	// Send echo message
+	sendTestMessage(t, ctx, client, reqQueue, &mqbridge.Message{
+		Body: []byte("hello"),
+		Headers: map[string]string{
+			"rabbitmq.routing_key": "echo",
+		},
+	})
+
+	received := receiveTestMessage(t, ctx, client, resQueue)
+	if received == nil {
+		t.Fatal("expected echo response, got nil")
+	}
+	if string(received.Body) != "hello" {
+		t.Errorf("echo body: expected %q, got %q", "hello", string(received.Body))
+	}
+
+	// Send upper message
+	sendTestMessage(t, ctx, client, reqQueue, &mqbridge.Message{
+		Body: []byte("world"),
+		Headers: map[string]string{
+			"rabbitmq.routing_key": "upper",
+		},
+	})
+
+	received = receiveTestMessage(t, ctx, client, resQueue)
+	if received == nil {
+		t.Fatal("expected upper response, got nil")
+	}
+	if string(received.Body) != "WORLD" {
+		t.Errorf("upper body: expected %q, got %q", "WORLD", string(received.Body))
+	}
+}
+
+func TestCommandFailure(t *testing.T) {
+	srv := localserver.NewTestServer(localserver.Config{APIKey: testAPIKey})
+	defer srv.Close()
+
+	reqQueue := uniqueName("req-fail")
+	resQueue := uniqueName("res-fail")
+
+	cfg := &Config{
+		SimpleMQ: SimpleMQConfig{APIURL: srv.TestURL()},
+		Request: RequestConfig{
+			Queue: reqQueue, APIKey: testAPIKey,
+			PollingInterval: "100ms",
+		},
+		Response: ResponseConfig{
+			Queue: resQueue, APIKey: testAPIKey,
+		},
+		Handlers: []HandlerConfig{
+			{
+				Name:     "fail",
+				Match:    map[string]string{"rabbitmq.routing_key": "fail"},
+				Command:  []string{"false"},
+				Blocking: true,
+			},
+		},
+	}
+
+	app, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	go app.Run(ctx)
+	time.Sleep(200 * time.Millisecond)
+
+	client := newTestSMQClient(t, srv.TestURL())
+
+	sendTestMessage(t, ctx, client, reqQueue, &mqbridge.Message{
+		Body: []byte("fail"),
+		Headers: map[string]string{
+			"rabbitmq.routing_key": "fail",
+		},
+	})
+
+	// No response should be sent
+	time.Sleep(500 * time.Millisecond)
+	received := receiveTestMessage(t, ctx, client, resQueue)
+	if received != nil {
+		t.Errorf("expected no response for failed command, got %q", string(received.Body))
+	}
+}
