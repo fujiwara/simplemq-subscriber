@@ -191,6 +191,7 @@ func (a *App) handleBlocking(ctx context.Context, handler *Handler, msg *mqbridg
 
 	result, err := handler.Execute(ctx, msg)
 	if err != nil {
+		// response: false handler returns error -> don't delete, will be redelivered
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "command execution failed")
 		handler.logger.ErrorContext(ctx, "command execution failed",
@@ -198,7 +199,7 @@ func (a *App) handleBlocking(ctx context.Context, handler *Handler, msg *mqbridg
 			"error", err,
 		)
 		a.metrics.messageErrors.Add(ctx, 1, metric.WithAttributeSet(handler.attrs))
-		return // don't delete message, will be redelivered
+		return
 	}
 
 	if handler.response {
