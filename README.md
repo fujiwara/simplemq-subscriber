@@ -1,6 +1,6 @@
 # simplemq-subscriber
 
-A daemon that subscribes to [SAKURA Cloud SimpleMQ](https://manual.sakura.ad.jp/cloud/manual-simplemq.html) queues, dispatches messages to external commands based on header matching, and publishes results back to a response queue.
+A daemon that subscribes to [SAKURA Cloud SimpleMQ](https://manual.sakura.ad.jp/cloud/appliance/simplemq/index.html) queues, dispatches messages to external commands based on header matching, and publishes results back to a response queue.
 
 Designed to work with [mqbridge](https://github.com/fujiwara/mqbridge) for bridging on-premises RabbitMQ messaging to the cloud.
 
@@ -19,6 +19,18 @@ RabbitMQ (on-premises)
 ```
 
 ## Installation
+
+### Homebrew
+
+```bash
+brew install fujiwara/tap/simplemq-subscriber
+```
+
+### Binary releases
+
+Download the latest binary from [GitHub Releases](https://github.com/fujiwara/simplemq-subscriber/releases).
+
+### Go install
 
 ```bash
 go install github.com/fujiwara/simplemq-subscriber/cmd/simplemq-subscriber@latest
@@ -113,7 +125,7 @@ The following functions are available in config files via [jsonnet-armed](https:
 
 - `must_env("VAR")` — Read environment variable (error if not set)
 - `env("VAR", "default")` — Read environment variable with default
-- `secret("vault-id", "name")` — Read from [SAKURA Cloud Secret Manager](https://manual.sakura.ad.jp/cloud/manual-secret-manager.html)
+- `secret("vault-id", "name")` — Read from [SAKURA Cloud Secret Manager](https://manual.sakura.ad.jp/cloud/appliance/secretsmanager/index.html)
 - `sha256(str)`, `md5(str)` — Hash functions
 - See [jsonnet-armed README](https://github.com/fujiwara/jsonnet-armed#readme) for more
 
