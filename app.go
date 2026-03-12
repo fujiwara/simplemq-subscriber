@@ -184,6 +184,7 @@ func (a *App) handleBlocking(ctx context.Context, handler *Handler, msg *mqbridg
 			attribute.String("message_id", string(msgID)),
 			attribute.Bool("blocking", handler.blocking),
 		),
+		trace.WithAttributes(headerAttributes("request.header.", msg.Headers)...),
 	)
 	defer span.End()
 
@@ -228,6 +229,7 @@ func (a *App) publishResult(ctx context.Context, msg *mqbridge.Message) error {
 		trace.WithAttributes(
 			attribute.String("queue", a.config.Response.Queue),
 		),
+		trace.WithAttributes(headerAttributes("response.header.", msg.Headers)...),
 	)
 	defer span.End()
 
