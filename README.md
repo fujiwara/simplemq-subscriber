@@ -45,7 +45,7 @@ simplemq-subscriber render -c config.jsonnet
 
 ## Configuration
 
-Configuration is written in [Jsonnet](https://jsonnet.org/) (plain JSON is also supported).
+Configuration is written in [Jsonnet](https://jsonnet.org/) (plain JSON is also supported). Jsonnet evaluation is powered by [jsonnet-armed](https://github.com/fujiwara/jsonnet-armed), which provides built-in functions for environment variables, hashing, and more. See the [jsonnet-armed README](https://github.com/fujiwara/jsonnet-armed#readme) for the full list of available functions.
 
 ```jsonnet
 {
@@ -54,12 +54,12 @@ Configuration is written in [Jsonnet](https://jsonnet.org/) (plain JSON is also 
   },
   request: {
     queue: "request-queue",
-    api_key: std.extVar("REQUEST_API_KEY"),
+    api_key: must_env("REQUEST_API_KEY"),
     polling_interval: "1s",  // optional, default: 1s
   },
   response: {
     queue: "response-queue",
-    api_key: std.extVar("RESPONSE_API_KEY"),
+    api_key: must_env("RESPONSE_API_KEY"),
   },
   handlers: [
     {
@@ -107,17 +107,15 @@ Configuration is written in [Jsonnet](https://jsonnet.org/) (plain JSON is also 
 - Original message headers are preserved in the response (for mqbridge routing back to RabbitMQ)
 - If the command fails (non-zero exit), the message is **not deleted** and will be redelivered after the visibility timeout
 
-### Secret Manager
+### Jsonnet Built-in Functions
 
-API keys can be loaded from [SAKURA Cloud Secret Manager](https://manual.sakura.ad.jp/cloud/manual-secret-manager.html) using the `secret()` function:
+The following functions are available in config files via [jsonnet-armed](https://github.com/fujiwara/jsonnet-armed):
 
-```jsonnet
-{
-  request: {
-    api_key: secret("vault-id", "api-key-name"),
-  },
-}
-```
+- `must_env("VAR")` — Read environment variable (error if not set)
+- `env("VAR", "default")` — Read environment variable with default
+- `secret("vault-id", "name")` — Read from [SAKURA Cloud Secret Manager](https://manual.sakura.ad.jp/cloud/manual-secret-manager.html)
+- `sha256(str)`, `md5(str)` — Hash functions
+- See [jsonnet-armed README](https://github.com/fujiwara/jsonnet-armed#readme) for more
 
 ## Message Format
 
