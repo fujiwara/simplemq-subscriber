@@ -252,6 +252,10 @@ Errors (command failure, publish failure) are recorded on spans with `Error` sta
 | `simplemq_subscriber.messages.dropped` | Counter | Messages dropped (no matching handler) | — |
 | `simplemq_subscriber.command.duration` | Histogram | Command execution duration (seconds) | `handler` |
 
+## Examples
+
+- [End-to-end RPC example with Docker Compose](examples/rpc/) — Demonstrates the full RabbitMQ RPC round-trip locally with OpenTelemetry trace visualization
+
 ## LICENSE
 
 MIT
