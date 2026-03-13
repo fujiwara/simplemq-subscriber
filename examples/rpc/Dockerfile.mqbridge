@@ -1,0 +1,6 @@
+FROM golang:1.26.1 AS build
+RUN CGO_ENABLED=0 go install github.com/fujiwara/mqbridge/cmd/mqbridge@latest
+
+FROM debian:bookworm-slim
+COPY --from=build /go/bin/mqbridge /usr/local/bin/
+CMD ["mqbridge"]

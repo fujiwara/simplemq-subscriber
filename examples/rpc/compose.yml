@@ -1,0 +1,80 @@
+services:
+  rabbitmq:
+    image: rabbitmq:4-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - ./rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - ./rabbitmq-definitions.json:/etc/rabbitmq/definitions.json:ro
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+
+  simplemq-localserver:
+    build:
+      context: .
+      dockerfile: Dockerfile.localserver
+    command: ["simplemq-localserver", "--addr", "0.0.0.0:18080"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:18080/ 2>/dev/null; [ $? -ne 4 ]"]
+      interval: 3s
+      timeout: 5s
+      retries: 10
+
+  mqbridge:
+    build:
+      context: .
+      dockerfile: Dockerfile.mqbridge
+    volumes:
+      - ./mqbridge.jsonnet:/etc/mqbridge/config.jsonnet:ro
+    command: ["mqbridge", "run", "--config", "/etc/mqbridge/config.jsonnet"]
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-front:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      simplemq-localserver:
+        condition: service_healthy
+
+  subscriber:
+    build:
+      context: .
+      dockerfile: Dockerfile.subscriber
+    volumes:
+      - ./subscriber.jsonnet:/etc/subscriber/config.jsonnet:ro
+    command: ["simplemq-subscriber", "--config", "/etc/subscriber/config.jsonnet"]
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-front:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+    depends_on:
+      simplemq-localserver:
+        condition: service_healthy
+
+  otel-front:
+    build:
+      context: .
+      dockerfile: Dockerfile.otel-front
+    ports:
+      - "8000:8000"
+      - "4317:4317"
+      - "4318:4318"
+
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-front:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      mqbridge:
+        condition: service_started
+      subscriber:
+        condition: service_started

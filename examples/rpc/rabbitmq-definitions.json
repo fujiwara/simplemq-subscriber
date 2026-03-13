@@ -1,0 +1,50 @@
+{
+  "users": [
+    {
+      "name": "guest",
+      "password_hash": "Mto1zIpieoeMDb+WTUUhMy7Bvn72x1nGhizB8VC8PpMC8wlC",
+      "hashing_algorithm": "rabbit_password_hashing_sha256",
+      "tags": ["administrator"]
+    }
+  ],
+  "vhosts": [
+    {
+      "name": "/"
+    }
+  ],
+  "permissions": [
+    {
+      "user": "guest",
+      "vhost": "/",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    }
+  ],
+  "exchanges": [
+    {
+      "name": "commands",
+      "vhost": "/",
+      "type": "topic",
+      "durable": true,
+      "auto_delete": false
+    }
+  ],
+  "queues": [
+    {
+      "name": "rpc-request",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false
+    }
+  ],
+  "bindings": [
+    {
+      "source": "commands",
+      "vhost": "/",
+      "destination": "rpc-request",
+      "destination_type": "queue",
+      "routing_key": "#"
+    }
+  ]
+}
