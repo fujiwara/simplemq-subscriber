@@ -3,7 +3,6 @@ package subscriber
 import (
 	"context"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -197,44 +196,60 @@ func (a *App) handleBlocking(ctx context.Context, handler *Handler, msg *mqbridg
 
 	handler.logger.DebugContext(ctx, "handling message", "messageId", msgID)
 
-	result, err := handler.Execute(ctx, msg)
-	if errors.Is(err, ErrResponseIgnored) {
-		a.deleteMessage(ctx, msgID)
-		a.metrics.messagesProcessed.Add(ctx, 1, metric.WithAttributeSet(handler.attrs))
-		handler.logger.DebugContext(ctx, "message processed (response ignored)", "messageId", msgID)
-		return
-	}
-	if err != nil {
-		// response: false handler returns error -> don't delete, will be redelivered
-		span.RecordError(err)
+	result := handler.Execute(ctx, msg)
+
+	switch {
+	case result.Err != nil && handler.shouldIgnoreResponse(result.ExitCode):
+		// response_ignore matched: suppress response, delete message
+		handler.logger.InfoContext(ctx, "response ignored by exit code",
+			"messageId", msgID, "exit_code", result.ExitCode)
+
+	case result.Err != nil && !handler.response:
+		// fire-and-forget failure: don't delete, will be redelivered
+		span.RecordError(result.Err)
 		span.SetStatus(codes.Error, "command execution failed")
 		handler.logger.ErrorContext(ctx, "command execution failed",
-			"messageId", msgID,
-			"error", err,
-		)
+			"messageId", msgID, "error", result.Err)
 		a.metrics.messageErrors.Add(ctx, 1, metric.WithAttributeSet(handler.attrs))
 		return
-	}
 
-	if handler.response {
-		// Inject trace context into response message headers
-		injectTraceContext(ctx, result.Headers)
-
-		if err := a.publishResult(ctx, result); err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "failed to publish result")
-			handler.logger.ErrorContext(ctx, "failed to publish result",
-				"messageId", msgID,
-				"error", err,
-			)
-			a.metrics.messageErrors.Add(ctx, 1, metric.WithAttributeSet(handler.attrs))
-			return // don't delete message, will be redelivered
+	case result.Err != nil && handler.response:
+		// response mode failure: send error response, then delete
+		resp := handler.buildResponse(msg, tailBytes(result.Stderr, maxErrorBodySize), "error", result.ExitCode)
+		if err := a.publishResponse(ctx, span, handler, resp, msgID); err != nil {
+			return
 		}
+
+	case handler.response:
+		// response mode success: send success response, then delete
+		resp := handler.buildResponse(msg, result.Stdout, "success", 0)
+		if err := a.publishResponse(ctx, span, handler, resp, msgID); err != nil {
+			return
+		}
+
+	default:
+		// fire-and-forget success: just delete
 	}
 
 	a.deleteMessage(ctx, msgID)
 	a.metrics.messagesProcessed.Add(ctx, 1, metric.WithAttributeSet(handler.attrs))
 	handler.logger.DebugContext(ctx, "message processed", "messageId", msgID)
+}
+
+// publishResponse injects trace context, publishes a response message, and
+// records errors on the span. Returns non-nil error if publish failed
+// (caller should skip delete so the message is redelivered).
+func (a *App) publishResponse(ctx context.Context, span trace.Span, handler *Handler, resp *mqbridge.Message, msgID message.MessageId) error {
+	injectTraceContext(ctx, resp.Headers)
+	if err := a.publishResult(ctx, resp); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to publish result")
+		handler.logger.ErrorContext(ctx, "failed to publish result",
+			"messageId", msgID, "error", err)
+		a.metrics.messageErrors.Add(ctx, 1, metric.WithAttributeSet(handler.attrs))
+		return err
+	}
+	return nil
 }
 
 func (a *App) publishResult(ctx context.Context, msg *mqbridge.Message) error {
