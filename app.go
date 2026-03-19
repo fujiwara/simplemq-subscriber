@@ -3,6 +3,7 @@ package subscriber
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -197,6 +198,12 @@ func (a *App) handleBlocking(ctx context.Context, handler *Handler, msg *mqbridg
 	handler.logger.DebugContext(ctx, "handling message", "messageId", msgID)
 
 	result, err := handler.Execute(ctx, msg)
+	if errors.Is(err, ErrResponseIgnored) {
+		a.deleteMessage(ctx, msgID)
+		a.metrics.messagesProcessed.Add(ctx, 1, metric.WithAttributeSet(handler.attrs))
+		handler.logger.DebugContext(ctx, "message processed (response ignored)", "messageId", msgID)
+		return
+	}
 	if err != nil {
 		// response: false handler returns error -> don't delete, will be redelivered
 		span.RecordError(err)
@@ -206,14 +213,6 @@ func (a *App) handleBlocking(ctx context.Context, handler *Handler, msg *mqbridg
 			"error", err,
 		)
 		a.metrics.messageErrors.Add(ctx, 1, metric.WithAttributeSet(handler.attrs))
-		return
-	}
-
-	if result == nil {
-		// response ignored (e.g. response_ignore exit code matched)
-		a.deleteMessage(ctx, msgID)
-		a.metrics.messagesProcessed.Add(ctx, 1, metric.WithAttributeSet(handler.attrs))
-		handler.logger.DebugContext(ctx, "message processed (response ignored)", "messageId", msgID)
 		return
 	}
 

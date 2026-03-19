@@ -19,6 +19,10 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// ErrResponseIgnored is returned when the command's exit code matches
+// the response_ignore condition, indicating the response should be suppressed.
+var ErrResponseIgnored = fmt.Errorf("response ignored")
+
 // Handler matches messages by headers and executes a command.
 type Handler struct {
 	name           string
@@ -111,7 +115,7 @@ func (h *Handler) Execute(ctx context.Context, msg *mqbridge.Message) (*mqbridge
 		exitCode := cmd.ProcessState.ExitCode()
 		if h.shouldIgnoreResponse(exitCode) {
 			h.logger.InfoContext(ctx, "response ignored by exit code", "exit_code", exitCode)
-			return nil, nil
+			return nil, ErrResponseIgnored
 		}
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "command failed")
