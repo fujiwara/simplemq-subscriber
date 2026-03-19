@@ -482,3 +482,135 @@ func TestCommandFailureResponseFalse(t *testing.T) {
 		t.Errorf("expected no response for failed command with response:false, got %q", string(received.Body))
 	}
 }
+
+func TestResponseIgnoreExitCode(t *testing.T) {
+	srv := localserver.NewTestServer(localserver.Config{APIKey: testAPIKey})
+	defer srv.Close()
+
+	reqQueue := uniqueName("req-ignore")
+	resQueue := uniqueName("res-ignore")
+
+	ignoreExitCode := 99
+	cfg := &Config{
+		SimpleMQ: SimpleMQConfig{APIURL: srv.TestURL()},
+		Request: RequestConfig{
+			Queue: reqQueue, APIKey: testAPIKey,
+			PollingInterval: "100ms",
+		},
+		Response: ResponseConfig{
+			Queue: resQueue, APIKey: testAPIKey,
+		},
+		Handlers: []HandlerConfig{
+			{
+				Name:     "ignore-test",
+				Match:    map[string]string{"rabbitmq.routing_key": "ignore"},
+				Command:  []string{"sh", "-c", "exit 99"},
+				Blocking: true,
+				Response: true,
+				ResponseIgnore: &ResponseIgnoreConfig{
+					ExitCode: &ignoreExitCode,
+				},
+			},
+		},
+	}
+
+	app, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	go app.Run(ctx)
+	time.Sleep(200 * time.Millisecond)
+
+	client := newTestSMQClient(t, srv.TestURL())
+
+	sendTestMessage(t, ctx, client, reqQueue, &mqbridge.Message{
+		Body: []byte("ignore-me"),
+		Headers: map[string]string{
+			"rabbitmq.routing_key": "ignore",
+		},
+	})
+
+	// response should be suppressed because exit code matches response_ignore
+	time.Sleep(500 * time.Millisecond)
+	received := receiveTestMessage(t, ctx, client, resQueue)
+	if received != nil {
+		t.Errorf("expected no response for ignored exit code, got %q", string(received.Body))
+	}
+
+	// request message should be deleted
+	res, err := client.ReceiveMessage(ctx, message.ReceiveMessageParams{
+		QueueName: message.QueueName(reqQueue),
+	})
+	if err != nil {
+		t.Fatalf("failed to check request queue: %v", err)
+	}
+	recvOK, ok := res.(*message.ReceiveMessageOK)
+	if ok && len(recvOK.Messages) > 0 {
+		t.Error("expected request queue to be empty after response_ignore")
+	}
+}
+
+func TestResponseIgnoreExitCodeNonMatch(t *testing.T) {
+	srv := localserver.NewTestServer(localserver.Config{APIKey: testAPIKey})
+	defer srv.Close()
+
+	reqQueue := uniqueName("req-ignore-nomatch")
+	resQueue := uniqueName("res-ignore-nomatch")
+
+	ignoreExitCode := 99
+	cfg := &Config{
+		SimpleMQ: SimpleMQConfig{APIURL: srv.TestURL()},
+		Request: RequestConfig{
+			Queue: reqQueue, APIKey: testAPIKey,
+			PollingInterval: "100ms",
+		},
+		Response: ResponseConfig{
+			Queue: resQueue, APIKey: testAPIKey,
+		},
+		Handlers: []HandlerConfig{
+			{
+				Name:     "ignore-nomatch",
+				Match:    map[string]string{"rabbitmq.routing_key": "fail"},
+				Command:  []string{"sh", "-c", "exit 98"}, // exits with 98, not 99
+				Blocking: true,
+				Response: true,
+				ResponseIgnore: &ResponseIgnoreConfig{
+					ExitCode: &ignoreExitCode,
+				},
+			},
+		},
+	}
+
+	app, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	go app.Run(ctx)
+	time.Sleep(200 * time.Millisecond)
+
+	client := newTestSMQClient(t, srv.TestURL())
+
+	sendTestMessage(t, ctx, client, reqQueue, &mqbridge.Message{
+		Body: []byte("fail"),
+		Headers: map[string]string{
+			"rabbitmq.routing_key": "fail",
+		},
+	})
+
+	// exit code 1 != 99, so error response should still be sent
+	received := receiveTestMessage(t, ctx, client, resQueue)
+	if received == nil {
+		t.Fatal("expected error response for non-matching exit code, got nil")
+	}
+	if received.Headers["x-status"] != "error" {
+		t.Errorf("x-status: expected %q, got %q", "error", received.Headers["x-status"])
+	}
+}

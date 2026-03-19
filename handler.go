@@ -27,6 +27,7 @@ type Handler struct {
 	timeout        time.Duration
 	blocking       bool
 	response       bool
+	responseIgnore *ResponseIgnoreConfig
 	maxConcurrency int
 	sem            chan struct{} // semaphore for non-blocking concurrency control
 	logger         *slog.Logger
@@ -43,6 +44,7 @@ func NewHandler(cfg HandlerConfig, logger *slog.Logger, m *Metrics) *Handler {
 		timeout:        cfg.GetTimeout(),
 		blocking:       cfg.Blocking,
 		response:       cfg.Response,
+		responseIgnore: cfg.ResponseIgnore,
 		maxConcurrency: cfg.GetMaxConcurrency(),
 		logger:         logger.With("handler", cfg.Name),
 		metrics:        m,
@@ -106,13 +108,18 @@ func (h *Handler) Execute(ctx context.Context, msg *mqbridge.Message) (*mqbridge
 	}
 
 	if err != nil {
+		exitCode := cmd.ProcessState.ExitCode()
+		if h.shouldIgnoreResponse(exitCode) {
+			h.logger.InfoContext(ctx, "response ignored by exit code", "exit_code", exitCode)
+			return nil, nil
+		}
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "command failed")
 		if !h.response {
 			return nil, fmt.Errorf("command failed: %w", err)
 		}
 		// response mode: return error response so the caller is not left waiting
-		return h.buildResponse(msg, tailBytes(stderr.Bytes(), maxErrorBodySize), "error", cmd.ProcessState.ExitCode()), nil
+		return h.buildResponse(msg, tailBytes(stderr.Bytes(), maxErrorBodySize), "error", exitCode), nil
 	}
 
 	return h.buildResponse(msg, stdout.Bytes(), "success", 0), nil
@@ -138,6 +145,14 @@ func (h *Handler) Release() {
 		return
 	}
 	<-h.sem
+}
+
+// shouldIgnoreResponse returns true if the exit code matches the response_ignore condition.
+func (h *Handler) shouldIgnoreResponse(exitCode int) bool {
+	if h.responseIgnore == nil || h.responseIgnore.ExitCode == nil {
+		return false
+	}
+	return exitCode == *h.responseIgnore.ExitCode
 }
 
 // buildResponse constructs a response message from the original request.

@@ -5,6 +5,8 @@ import (
 	"testing"
 )
 
+func ptr[T any](v T) *T { return &v }
+
 func TestLoadConfig(t *testing.T) {
 	ctx := context.Background()
 	cfg, err := LoadConfig(ctx, "testdata/config.jsonnet")
@@ -115,6 +117,37 @@ func TestValidateConfig(t *testing.T) {
 				},
 			},
 			wantErr: true,
+		},
+		{
+			name: "response_ignore without response",
+			config: Config{
+				Request: RequestConfig{Queue: "q", APIKey: "k"},
+				Handlers: []HandlerConfig{
+					{Name: "h", Match: map[string]string{"k": "v"}, Command: []string{"echo"}, ResponseIgnore: &ResponseIgnoreConfig{ExitCode: ptr(99)}},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "response_ignore without exit_code",
+			config: Config{
+				Request:  RequestConfig{Queue: "q", APIKey: "k"},
+				Response: ResponseConfig{Queue: "q", APIKey: "k"},
+				Handlers: []HandlerConfig{
+					{Name: "h", Match: map[string]string{"k": "v"}, Command: []string{"echo"}, Response: true, ResponseIgnore: &ResponseIgnoreConfig{}},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "valid response_ignore",
+			config: Config{
+				Request:  RequestConfig{Queue: "q", APIKey: "k"},
+				Response: ResponseConfig{Queue: "q", APIKey: "k"},
+				Handlers: []HandlerConfig{
+					{Name: "h", Match: map[string]string{"k": "v"}, Command: []string{"echo"}, Response: true, ResponseIgnore: &ResponseIgnoreConfig{ExitCode: ptr(99)}},
+				},
+			},
 		},
 	}
 	for _, tt := range tests {

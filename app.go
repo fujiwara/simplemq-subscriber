@@ -209,6 +209,14 @@ func (a *App) handleBlocking(ctx context.Context, handler *Handler, msg *mqbridg
 		return
 	}
 
+	if result == nil {
+		// response ignored (e.g. response_ignore exit code matched)
+		a.deleteMessage(ctx, msgID)
+		a.metrics.messagesProcessed.Add(ctx, 1, metric.WithAttributeSet(handler.attrs))
+		handler.logger.DebugContext(ctx, "message processed (response ignored)", "messageId", msgID)
+		return
+	}
+
 	if handler.response {
 		// Inject trace context into response message headers
 		injectTraceContext(ctx, result.Headers)
