@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.1.0](https://github.com/fujiwara/simplemq-subscriber/compare/v0.0.3...v0.1.0) - 2026-03-22
+- Update README: architecture diagrams, section order, and observability details by @fujiwara in https://github.com/fujiwara/simplemq-subscriber/pull/6
+- Add end-to-end RPC example with Docker Compose by @fujiwara in https://github.com/fujiwara/simplemq-subscriber/pull/8
+- Make response queue optional and default response to false by @fujiwara in https://github.com/fujiwara/simplemq-subscriber/pull/9
+- Add response_ignore option to suppress response by exit code by @fujiwara in https://github.com/fujiwara/simplemq-subscriber/pull/11
+
 ## [v0.1.0](https://github.com/fujiwara/simplemq-subscriber/compare/v0.0.3...v0.1.0) - 2026-03-13
 - Update README: architecture diagrams, section order, and observability details by @fujiwara in https://github.com/fujiwara/simplemq-subscriber/pull/6
 - Add end-to-end RPC example with Docker Compose by @fujiwara in https://github.com/fujiwara/simplemq-subscriber/pull/8
