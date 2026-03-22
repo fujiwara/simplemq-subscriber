@@ -96,97 +96,16 @@ func TestHandlerExecute(t *testing.T) {
 		},
 	}
 
-	result, err := h.Execute(context.Background(), msg)
-	if err != nil {
-		t.Fatalf("Execute failed: %v", err)
+	result := h.Execute(context.Background(), msg)
+	if result.Err != nil {
+		t.Fatalf("Execute failed: %v", result.Err)
 	}
-	if string(result.Body) != "hello world" {
-		t.Errorf("body: expected %q, got %q", "hello world", string(result.Body))
+	if result.ExitCode != 0 {
+		t.Errorf("exit code: expected 0, got %d", result.ExitCode)
 	}
-	// Headers should be preserved (no reply_to, so no rewriting)
-	if result.Headers["rabbitmq.routing_key"] != "test.key" {
-		t.Errorf("routing_key header: expected %q, got %q", "test.key", result.Headers["rabbitmq.routing_key"])
+	if string(result.Stdout) != "hello world" {
+		t.Errorf("stdout: expected %q, got %q", "hello world", string(result.Stdout))
 	}
-	if result.Headers["rabbitmq.exchange"] != "test-exchange" {
-		t.Errorf("exchange header: expected %q, got %q", "test-exchange", result.Headers["rabbitmq.exchange"])
-	}
-	if result.Headers["x-status"] != "success" {
-		t.Errorf("x-status: expected %q, got %q", "success", result.Headers["x-status"])
-	}
-}
-
-func TestHandlerExecuteRPCResponse(t *testing.T) {
-	m := newTestMetrics(t)
-	h := NewHandler(HandlerConfig{
-		Name:    "rpc",
-		Match:   map[string]string{"k": "v"},
-		Command: []string{"cat"},
-		Timeout: "5s",
-	}, slog.Default(), m)
-
-	t.Run("with reply_to routes to reply queue", func(t *testing.T) {
-		msg := &mqbridge.Message{
-			Body: []byte("request"),
-			Headers: map[string]string{
-				"k":                        "v",
-				"rabbitmq.exchange":        "commands",
-				"rabbitmq.routing_key":     "deploy",
-				"rabbitmq.reply_to":        "amq.gen-reply-queue",
-				"rabbitmq.correlation_id":  "req-123",
-				"rabbitmq.header.x-custom": "preserved",
-			},
-		}
-
-		result, err := h.Execute(t.Context(), msg)
-		if err != nil {
-			t.Fatalf("Execute failed: %v", err)
-		}
-		if got := result.Headers["rabbitmq.exchange"]; got != "" {
-			t.Errorf("exchange: expected empty, got %q", got)
-		}
-		if got := result.Headers["rabbitmq.routing_key"]; got != "amq.gen-reply-queue" {
-			t.Errorf("routing_key: expected %q, got %q", "amq.gen-reply-queue", got)
-		}
-		if got := result.Headers["rabbitmq.correlation_id"]; got != "req-123" {
-			t.Errorf("correlation_id: expected %q, got %q", "req-123", got)
-		}
-		if got := result.Headers["rabbitmq.header.x-custom"]; got != "preserved" {
-			t.Errorf("custom header: expected %q, got %q", "preserved", got)
-		}
-		if _, ok := result.Headers["rabbitmq.reply_to"]; ok {
-			t.Error("reply_to should be removed from response")
-		}
-		// RabbitMQ context: status header has rabbitmq.header. prefix
-		if got := result.Headers["rabbitmq.header.x-status"]; got != "success" {
-			t.Errorf("x-status: expected %q, got %q", "success", got)
-		}
-	})
-
-	t.Run("without reply_to preserves headers", func(t *testing.T) {
-		msg := &mqbridge.Message{
-			Body: []byte("request"),
-			Headers: map[string]string{
-				"k":                    "v",
-				"rabbitmq.exchange":    "commands",
-				"rabbitmq.routing_key": "deploy",
-			},
-		}
-
-		result, err := h.Execute(t.Context(), msg)
-		if err != nil {
-			t.Fatalf("Execute failed: %v", err)
-		}
-		if got := result.Headers["rabbitmq.exchange"]; got != "commands" {
-			t.Errorf("exchange: expected %q, got %q", "commands", got)
-		}
-		if got := result.Headers["rabbitmq.routing_key"]; got != "deploy" {
-			t.Errorf("routing_key: expected %q, got %q", "deploy", got)
-		}
-		// SimpleMQ context: status header has no prefix
-		if got := result.Headers["x-status"]; got != "success" {
-			t.Errorf("x-status: expected %q, got %q", "success", got)
-		}
-	})
 }
 
 func TestHandlerExecuteTransform(t *testing.T) {
@@ -203,130 +122,57 @@ func TestHandlerExecuteTransform(t *testing.T) {
 		Headers: map[string]string{"k": "v"},
 	}
 
-	result, err := h.Execute(context.Background(), msg)
-	if err != nil {
-		t.Fatalf("Execute failed: %v", err)
+	result := h.Execute(context.Background(), msg)
+	if result.Err != nil {
+		t.Fatalf("Execute failed: %v", result.Err)
 	}
-	if string(result.Body) != "HELLO" {
-		t.Errorf("body: expected %q, got %q", "HELLO", string(result.Body))
+	if string(result.Stdout) != "HELLO" {
+		t.Errorf("stdout: expected %q, got %q", "HELLO", string(result.Stdout))
 	}
 }
 
 func TestHandlerExecuteFailure(t *testing.T) {
 	m := newTestMetrics(t)
 
-	t.Run("response false returns error", func(t *testing.T) {
+	t.Run("returns error and exit code", func(t *testing.T) {
 		h := NewHandler(HandlerConfig{
-			Name:     "fail",
-			Match:    map[string]string{"k": "v"},
-			Command:  []string{"false"},
-			Timeout:  "5s",
-			Response: false,
+			Name:    "fail",
+			Match:   map[string]string{"k": "v"},
+			Command: []string{"sh", "-c", "echo 'something went wrong' >&2; exit 1"},
+			Timeout: "5s",
 		}, slog.Default(), m)
 
 		msg := &mqbridge.Message{Body: []byte("test"), Headers: map[string]string{"k": "v"}}
-		_, err := h.Execute(t.Context(), msg)
-		if err == nil {
+		result := h.Execute(t.Context(), msg)
+		if result.Err == nil {
 			t.Error("expected error from failing command")
 		}
-	})
-
-	t.Run("response true returns error response with x-status", func(t *testing.T) {
-		h := NewHandler(HandlerConfig{
-			Name:     "fail-rpc",
-			Match:    map[string]string{"k": "v"},
-			Command:  []string{"sh", "-c", "echo 'something went wrong' >&2; exit 1"},
-			Timeout:  "5s",
-			Response: true,
-		}, slog.Default(), m)
-
-		msg := &mqbridge.Message{
-			Body: []byte("test"),
-			Headers: map[string]string{
-				"k":                    "v",
-				"rabbitmq.exchange":    "commands",
-				"rabbitmq.routing_key": "deploy",
-			},
+		if result.ExitCode != 1 {
+			t.Errorf("exit code: expected 1, got %d", result.ExitCode)
 		}
-		result, err := h.Execute(t.Context(), msg)
-		if err != nil {
-			t.Fatalf("expected no error for response handler, got %v", err)
-		}
-		if result.Headers["x-status"] != "error" {
-			t.Errorf("x-status: expected %q, got %q", "error", result.Headers["x-status"])
-		}
-		if result.Headers["x-exit-code"] != "1" {
-			t.Errorf("x-exit-code: expected %q, got %q", "1", result.Headers["x-exit-code"])
-		}
-		if string(result.Body) != "something went wrong\n" {
-			t.Errorf("body: expected stderr content, got %q", string(result.Body))
+		if string(result.Stderr) != "something went wrong\n" {
+			t.Errorf("stderr: expected %q, got %q", "something went wrong\n", string(result.Stderr))
 		}
 	})
 
-	t.Run("response true truncates large stderr to last 4KB", func(t *testing.T) {
-		// Generate 8KB of stderr output, keep only last 4KB
+	t.Run("captures large stderr", func(t *testing.T) {
 		h := NewHandler(HandlerConfig{
-			Name:     "fail-large-stderr",
-			Match:    map[string]string{"k": "v"},
-			Command:  []string{"sh", "-c", "dd if=/dev/zero bs=1 count=8192 | tr '\\0' 'X' >&2; exit 1"},
-			Timeout:  "5s",
-			Response: true,
+			Name:    "fail-large-stderr",
+			Match:   map[string]string{"k": "v"},
+			Command: []string{"sh", "-c", "head -c 8192 /dev/zero | tr '\\0' 'X' >&2; exit 1"},
+			Timeout: "5s",
 		}, slog.Default(), m)
 
 		msg := &mqbridge.Message{
 			Body:    []byte("test"),
 			Headers: map[string]string{"k": "v"},
 		}
-		result, err := h.Execute(t.Context(), msg)
-		if err != nil {
-			t.Fatalf("expected no error for response handler, got %v", err)
+		result := h.Execute(t.Context(), msg)
+		if result.Err == nil {
+			t.Error("expected error from failing command")
 		}
-		if len(result.Body) != maxErrorBodySize {
-			t.Errorf("body length: expected %d, got %d", maxErrorBodySize, len(result.Body))
-		}
-		if result.Headers["x-status"] != "error" {
-			t.Errorf("x-status: expected %q, got %q", "error", result.Headers["x-status"])
-		}
-	})
-
-	t.Run("response true with reply_to uses rabbitmq.header prefix", func(t *testing.T) {
-		h := NewHandler(HandlerConfig{
-			Name:     "fail-rpc-rabbitmq",
-			Match:    map[string]string{"k": "v"},
-			Command:  []string{"false"},
-			Timeout:  "5s",
-			Response: true,
-		}, slog.Default(), m)
-
-		msg := &mqbridge.Message{
-			Body: []byte("test"),
-			Headers: map[string]string{
-				"k":                       "v",
-				"rabbitmq.exchange":       "commands",
-				"rabbitmq.routing_key":    "deploy",
-				"rabbitmq.reply_to":       "amq.gen-reply-queue",
-				"rabbitmq.correlation_id": "req-456",
-			},
-		}
-		result, err := h.Execute(t.Context(), msg)
-		if err != nil {
-			t.Fatalf("expected no error for response handler, got %v", err)
-		}
-		if got := result.Headers["rabbitmq.header.x-status"]; got != "error" {
-			t.Errorf("x-status: expected %q, got %q", "error", got)
-		}
-		if got := result.Headers["rabbitmq.header.x-exit-code"]; got != "1" {
-			t.Errorf("x-exit-code: expected %q, got %q", "1", got)
-		}
-		// RPC routing should still apply
-		if got := result.Headers["rabbitmq.exchange"]; got != "" {
-			t.Errorf("exchange: expected empty, got %q", got)
-		}
-		if got := result.Headers["rabbitmq.routing_key"]; got != "amq.gen-reply-queue" {
-			t.Errorf("routing_key: expected %q, got %q", "amq.gen-reply-queue", got)
-		}
-		if got := result.Headers["rabbitmq.correlation_id"]; got != "req-456" {
-			t.Errorf("correlation_id: expected %q, got %q", "req-456", got)
+		if len(result.Stderr) != 8192 {
+			t.Errorf("stderr length: expected 8192, got %d", len(result.Stderr))
 		}
 	})
 }
@@ -334,18 +180,193 @@ func TestHandlerExecuteFailure(t *testing.T) {
 func TestHandlerExecuteTimeout(t *testing.T) {
 	m := newTestMetrics(t)
 	h := NewHandler(HandlerConfig{
-		Name:     "slow",
-		Match:    map[string]string{"k": "v"},
-		Command:  []string{"sleep", "10"},
-		Timeout:  "100ms",
-		Response: false,
+		Name:    "slow",
+		Match:   map[string]string{"k": "v"},
+		Command: []string{"sleep", "10"},
+		Timeout: "100ms",
 	}, slog.Default(), m)
 
 	msg := &mqbridge.Message{Body: []byte("test"), Headers: map[string]string{"k": "v"}}
-	_, err := h.Execute(context.Background(), msg)
-	if err == nil {
+	result := h.Execute(context.Background(), msg)
+	if result.Err == nil {
 		t.Error("expected timeout error")
 	}
+}
+
+func TestBuildResponse(t *testing.T) {
+	m := newTestMetrics(t)
+
+	t.Run("without reply_to preserves headers", func(t *testing.T) {
+		h := NewHandler(HandlerConfig{
+			Name:     "test",
+			Match:    map[string]string{"k": "v"},
+			Command:  []string{"cat"},
+			Response: true,
+		}, slog.Default(), m)
+
+		msg := &mqbridge.Message{
+			Body: []byte("request"),
+			Headers: map[string]string{
+				"rabbitmq.exchange":    "commands",
+				"rabbitmq.routing_key": "deploy",
+			},
+		}
+
+		resp := h.buildResponse(msg, []byte("output"), "success", 0)
+		if got := resp.Headers["rabbitmq.exchange"]; got != "commands" {
+			t.Errorf("exchange: expected %q, got %q", "commands", got)
+		}
+		if got := resp.Headers["rabbitmq.routing_key"]; got != "deploy" {
+			t.Errorf("routing_key: expected %q, got %q", "deploy", got)
+		}
+		if got := resp.Headers["x-status"]; got != "success" {
+			t.Errorf("x-status: expected %q, got %q", "success", got)
+		}
+	})
+
+	t.Run("with reply_to routes to reply queue", func(t *testing.T) {
+		h := NewHandler(HandlerConfig{
+			Name:     "rpc",
+			Match:    map[string]string{"k": "v"},
+			Command:  []string{"cat"},
+			Response: true,
+		}, slog.Default(), m)
+
+		msg := &mqbridge.Message{
+			Body: []byte("request"),
+			Headers: map[string]string{
+				"rabbitmq.exchange":        "commands",
+				"rabbitmq.routing_key":     "deploy",
+				"rabbitmq.reply_to":        "amq.gen-reply-queue",
+				"rabbitmq.correlation_id":  "req-123",
+				"rabbitmq.header.x-custom": "preserved",
+			},
+		}
+
+		resp := h.buildResponse(msg, []byte("output"), "success", 0)
+		if got := resp.Headers["rabbitmq.exchange"]; got != "" {
+			t.Errorf("exchange: expected empty, got %q", got)
+		}
+		if got := resp.Headers["rabbitmq.routing_key"]; got != "amq.gen-reply-queue" {
+			t.Errorf("routing_key: expected %q, got %q", "amq.gen-reply-queue", got)
+		}
+		if got := resp.Headers["rabbitmq.correlation_id"]; got != "req-123" {
+			t.Errorf("correlation_id: expected %q, got %q", "req-123", got)
+		}
+		if got := resp.Headers["rabbitmq.header.x-custom"]; got != "preserved" {
+			t.Errorf("custom header: expected %q, got %q", "preserved", got)
+		}
+		if _, ok := resp.Headers["rabbitmq.reply_to"]; ok {
+			t.Error("reply_to should be removed from response")
+		}
+		if got := resp.Headers["rabbitmq.header.x-status"]; got != "success" {
+			t.Errorf("x-status: expected %q, got %q", "success", got)
+		}
+	})
+
+	t.Run("error response with exit code", func(t *testing.T) {
+		h := NewHandler(HandlerConfig{
+			Name:     "fail",
+			Match:    map[string]string{"k": "v"},
+			Command:  []string{"false"},
+			Response: true,
+		}, slog.Default(), m)
+
+		msg := &mqbridge.Message{
+			Body: []byte("test"),
+			Headers: map[string]string{
+				"rabbitmq.exchange":    "commands",
+				"rabbitmq.routing_key": "deploy",
+			},
+		}
+
+		resp := h.buildResponse(msg, []byte("error output"), "error", 1)
+		if got := resp.Headers["x-status"]; got != "error" {
+			t.Errorf("x-status: expected %q, got %q", "error", got)
+		}
+		if got := resp.Headers["x-exit-code"]; got != "1" {
+			t.Errorf("x-exit-code: expected %q, got %q", "1", got)
+		}
+		if string(resp.Body) != "error output" {
+			t.Errorf("body: expected %q, got %q", "error output", string(resp.Body))
+		}
+	})
+
+	t.Run("error response with reply_to uses rabbitmq.header prefix", func(t *testing.T) {
+		h := NewHandler(HandlerConfig{
+			Name:     "fail-rpc",
+			Match:    map[string]string{"k": "v"},
+			Command:  []string{"false"},
+			Response: true,
+		}, slog.Default(), m)
+
+		msg := &mqbridge.Message{
+			Body: []byte("test"),
+			Headers: map[string]string{
+				"rabbitmq.exchange":       "commands",
+				"rabbitmq.routing_key":    "deploy",
+				"rabbitmq.reply_to":       "amq.gen-reply-queue",
+				"rabbitmq.correlation_id": "req-456",
+			},
+		}
+
+		resp := h.buildResponse(msg, []byte("error"), "error", 1)
+		if got := resp.Headers["rabbitmq.header.x-status"]; got != "error" {
+			t.Errorf("x-status: expected %q, got %q", "error", got)
+		}
+		if got := resp.Headers["rabbitmq.header.x-exit-code"]; got != "1" {
+			t.Errorf("x-exit-code: expected %q, got %q", "1", got)
+		}
+		if got := resp.Headers["rabbitmq.exchange"]; got != "" {
+			t.Errorf("exchange: expected empty, got %q", got)
+		}
+		if got := resp.Headers["rabbitmq.routing_key"]; got != "amq.gen-reply-queue" {
+			t.Errorf("routing_key: expected %q, got %q", "amq.gen-reply-queue", got)
+		}
+	})
+}
+
+func TestShouldIgnoreResponse(t *testing.T) {
+	m := newTestMetrics(t)
+
+	t.Run("nil config", func(t *testing.T) {
+		h := NewHandler(HandlerConfig{
+			Name:    "test",
+			Match:   map[string]string{"k": "v"},
+			Command: []string{"echo"},
+		}, slog.Default(), m)
+		if h.shouldIgnoreResponse(&CommandResult{ExitCode: 99}) {
+			t.Error("expected false when responseIgnore is nil")
+		}
+	})
+
+	t.Run("matching exit code", func(t *testing.T) {
+		exitCode := 99
+		h := NewHandler(HandlerConfig{
+			Name:           "test",
+			Match:          map[string]string{"k": "v"},
+			Command:        []string{"echo"},
+			Response:       true,
+			ResponseIgnore: &ResponseIgnoreConfig{ExitCode: &exitCode},
+		}, slog.Default(), m)
+		if !h.shouldIgnoreResponse(&CommandResult{ExitCode: 99}) {
+			t.Error("expected true for matching exit code")
+		}
+	})
+
+	t.Run("non-matching exit code", func(t *testing.T) {
+		exitCode := 99
+		h := NewHandler(HandlerConfig{
+			Name:           "test",
+			Match:          map[string]string{"k": "v"},
+			Command:        []string{"echo"},
+			Response:       true,
+			ResponseIgnore: &ResponseIgnoreConfig{ExitCode: &exitCode},
+		}, slog.Default(), m)
+		if h.shouldIgnoreResponse(&CommandResult{ExitCode: 1}) {
+			t.Error("expected false for non-matching exit code")
+		}
+	})
 }
 
 func TestTailBytes(t *testing.T) {

@@ -3,7 +3,6 @@ package subscriber
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"log/slog"
 	"maps"
 	"os/exec"
@@ -19,6 +18,14 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// CommandResult holds the output of a command execution.
+type CommandResult struct {
+	Stdout   []byte
+	Stderr   []byte
+	ExitCode int
+	Err      error // non-nil if command failed (non-zero exit or execution error)
+}
+
 // Handler matches messages by headers and executes a command.
 type Handler struct {
 	name           string
@@ -27,6 +34,7 @@ type Handler struct {
 	timeout        time.Duration
 	blocking       bool
 	response       bool
+	responseIgnore *ResponseIgnoreConfig
 	maxConcurrency int
 	sem            chan struct{} // semaphore for non-blocking concurrency control
 	logger         *slog.Logger
@@ -43,6 +51,7 @@ func NewHandler(cfg HandlerConfig, logger *slog.Logger, m *Metrics) *Handler {
 		timeout:        cfg.GetTimeout(),
 		blocking:       cfg.Blocking,
 		response:       cfg.Response,
+		responseIgnore: cfg.ResponseIgnore,
 		maxConcurrency: cfg.GetMaxConcurrency(),
 		logger:         logger.With("handler", cfg.Name),
 		metrics:        m,
@@ -70,9 +79,8 @@ func (h *Handler) Match(msg *mqbridge.Message) bool {
 	return true
 }
 
-// Execute runs the command with the message body as stdin.
-// Returns a response message with stdout as body and original headers preserved.
-func (h *Handler) Execute(ctx context.Context, msg *mqbridge.Message) (*mqbridge.Message, error) {
+// Execute runs the command with the message body as stdin and returns the result.
+func (h *Handler) Execute(ctx context.Context, msg *mqbridge.Message) *CommandResult {
 	ctx, span := otel.Tracer(tracerName).Start(ctx, "simplemq_subscriber.execute",
 		trace.WithAttributes(
 			attribute.String("handler", h.name),
@@ -105,17 +113,19 @@ func (h *Handler) Execute(ctx context.Context, msg *mqbridge.Message) (*mqbridge
 		h.logger.InfoContext(ctx, "command stderr", "stderr", stderr.String())
 	}
 
+	result := &CommandResult{
+		Stdout: stdout.Bytes(),
+		Stderr: stderr.Bytes(),
+		Err:    err,
+	}
 	if err != nil {
+		if cmd.ProcessState != nil {
+			result.ExitCode = cmd.ProcessState.ExitCode()
+		}
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "command failed")
-		if !h.response {
-			return nil, fmt.Errorf("command failed: %w", err)
-		}
-		// response mode: return error response so the caller is not left waiting
-		return h.buildResponse(msg, tailBytes(stderr.Bytes(), maxErrorBodySize), "error", cmd.ProcessState.ExitCode()), nil
 	}
-
-	return h.buildResponse(msg, stdout.Bytes(), "success", 0), nil
+	return result
 }
 
 // Acquire acquires a semaphore slot for non-blocking handlers.
@@ -138,6 +148,14 @@ func (h *Handler) Release() {
 		return
 	}
 	<-h.sem
+}
+
+// shouldIgnoreResponse returns true if the command result matches the response_ignore condition.
+func (h *Handler) shouldIgnoreResponse(result *CommandResult) bool {
+	if h.responseIgnore == nil || h.responseIgnore.ExitCode == nil {
+		return false
+	}
+	return result.ExitCode == *h.responseIgnore.ExitCode
 }
 
 // buildResponse constructs a response message from the original request.

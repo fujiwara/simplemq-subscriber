@@ -38,6 +38,7 @@ go fmt ./...
 - SimpleMQ default API URL comes from `simplemq.DefaultMessageAPIRootURL` (SDK), not hardcoded
 - Default constants (`DefaultPollingInterval`, `DefaultCommandTimeout`, `DefaultMaxConcurrency`) are defined in `config.go`
 - `HandlerConfig.Response` is `bool` (defaults to false) — fire-and-forget by default; set `true` for RPC-style request/response
+- `HandlerConfig.ResponseIgnore` is `*ResponseIgnoreConfig` — when set with `exit_code`, suppresses response for that exit code (message is deleted but no response published). Requires `response: true`
 - Response queue (`response.queue` / `response.api_key`) is optional — required only when any handler has `response: true`
 
 ## Key Design Decisions

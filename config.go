@@ -61,15 +61,21 @@ type ResponseConfig struct {
 	APIKey         string `json:"api_key"`
 }
 
+// ResponseIgnoreConfig defines conditions under which a response is suppressed.
+type ResponseIgnoreConfig struct {
+	ExitCode *int `json:"exit_code"`
+}
+
 // HandlerConfig defines a handler that matches messages and executes a command.
 type HandlerConfig struct {
-	Name           string            `json:"name"`
-	Match          map[string]string `json:"match"`
-	Command        []string          `json:"command"`
-	Timeout        string            `json:"timeout"`
-	Blocking       bool              `json:"blocking"`
-	MaxConcurrency int               `json:"max_concurrency"`
-	Response       bool              `json:"response"`
+	Name           string                `json:"name"`
+	Match          map[string]string     `json:"match"`
+	Command        []string              `json:"command"`
+	Timeout        string                `json:"timeout"`
+	Blocking       bool                  `json:"blocking"`
+	MaxConcurrency int                   `json:"max_concurrency"`
+	Response       bool                  `json:"response"`
+	ResponseIgnore *ResponseIgnoreConfig `json:"response_ignore"`
 }
 
 // GetTimeout returns the command timeout as a time.Duration.
@@ -191,6 +197,12 @@ func (h *HandlerConfig) validate(index int) error {
 	}
 	if !h.Blocking && h.MaxConcurrency < 0 {
 		return fmt.Errorf("handlers[%d].max_concurrency must be positive", index)
+	}
+	if h.ResponseIgnore != nil && !h.Response {
+		return fmt.Errorf("handlers[%d].response_ignore requires response to be true", index)
+	}
+	if h.ResponseIgnore != nil && h.ResponseIgnore.ExitCode == nil {
+		return fmt.Errorf("handlers[%d].response_ignore.exit_code is required", index)
 	}
 	return nil
 }

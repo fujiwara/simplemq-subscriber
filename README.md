@@ -148,6 +148,9 @@ Configuration is written in [Jsonnet](https://jsonnet.org/) (plain JSON is also 
       timeout: "60s",     // optional, default: 30s
       blocking: true,     // wait for completion before processing next message
       response: true,     // send response back (requires response queue)
+      response_ignore: {  // optional: suppress response for specific exit code
+        exit_code: 99,    // if command exits with 99, no response is sent
+      },
     },
     {
       name: "notify",
@@ -199,6 +202,28 @@ When the message originates from RabbitMQ (`rabbitmq.reply_to` is present), thes
 
 - **`response: true`**: On command failure, an error response is sent with `x-status: error`, the last 4KB of stderr as the body, and the message is deleted. This ensures the caller is not left waiting indefinitely. Requires `response` queue to be configured.
 - **`response: false`** (default): On command failure, no response is sent and the message is **not deleted** (will be redelivered for retry). No response queue is needed.
+
+### Suppressing Response (`response_ignore`)
+
+When `response: true` is set, you can selectively suppress the response based on the command's exit code using `response_ignore`. This is useful when running multiple subscriber instances where only one should respond (e.g., the command acquires a lock and only the winner responds).
+
+```jsonnet
+{
+  name: "my-handler",
+  response: true,
+  response_ignore: {
+    exit_code: 99,  // suppress response when command exits with 99
+  },
+  // ...
+}
+```
+
+When the command exits with the specified `exit_code`:
+- No response message is published
+- The request message is deleted (the command already ran)
+- The event is logged at Info level
+
+For any other exit code, the normal behavior applies (success response for exit 0, error response for other non-zero codes).
 
 ### RPC Response Routing
 
