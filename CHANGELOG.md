@@ -1,5 +1,8 @@
 # Changelog
 
+## [v0.2.2](https://github.com/fujiwara/simplemq-subscriber/compare/v0.2.1...v0.2.2) - 2026-03-24
+- Drain queue continuously instead of one poll per tick by @fujiwara in https://github.com/fujiwara/simplemq-subscriber/pull/20
+
 ## [v0.2.1](https://github.com/fujiwara/simplemq-subscriber/compare/v0.2.0...v0.2.1) - 2026-03-24
 - Log command stderr line by line by @fujiwara in https://github.com/fujiwara/simplemq-subscriber/pull/18
 
