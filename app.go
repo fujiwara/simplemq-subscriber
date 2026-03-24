@@ -106,23 +106,35 @@ func (a *App) Run(ctx context.Context) error {
 			slog.Info("subscriber stopped")
 			return nil
 		case <-ticker.C:
-			if err := a.poll(ctx); err != nil {
-				slog.Error("poll error", "error", err)
-			}
+			a.drainQueue(ctx)
 		}
 	}
 }
 
-func (a *App) poll(ctx context.Context) error {
+// drainQueue polls repeatedly until the queue is empty or an error occurs.
+func (a *App) drainQueue(ctx context.Context) {
+	for {
+		n, err := a.poll(ctx)
+		if err != nil {
+			slog.Error("poll error", "error", err)
+			return
+		}
+		if n == 0 {
+			return
+		}
+	}
+}
+
+func (a *App) poll(ctx context.Context) (int, error) {
 	res, err := a.reqClient.ReceiveMessage(ctx, message.ReceiveMessageParams{
 		QueueName: message.QueueName(a.config.Request.Queue),
 	})
 	if err != nil {
-		return fmt.Errorf("failed to receive message: %w", err)
+		return 0, fmt.Errorf("failed to receive message: %w", err)
 	}
 	recvOK, ok := res.(*message.ReceiveMessageOK)
 	if !ok {
-		return fmt.Errorf("unexpected response type: %T", res)
+		return 0, fmt.Errorf("unexpected response type: %T", res)
 	}
 
 	// Use non-cancellable context for all message processing so that
@@ -160,7 +172,7 @@ func (a *App) poll(ctx context.Context) error {
 		} else {
 			// Acquire semaphore before spawning goroutine (blocks if at max_concurrency)
 			if err := handler.Acquire(ctx); err != nil {
-				return err // context cancelled
+				return 0, err // context cancelled
 			}
 			a.wg.Go(func() {
 				defer handler.Release()
@@ -168,7 +180,7 @@ func (a *App) poll(ctx context.Context) error {
 			})
 		}
 	}
-	return nil
+	return len(recvOK.Messages), nil
 }
 
 func (a *App) findHandler(msg *mqbridge.Message) *Handler {
