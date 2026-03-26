@@ -1,3 +1,5 @@
+**This is renamed to [fujiwara/mqsubscriber](github.com/fujiwara/mqsubscriber).**
+
 # simplemq-subscriber
 
 A daemon that subscribes to [SAKURA Cloud SimpleMQ](https://manual.sakura.ad.jp/cloud/appliance/simplemq/index.html) queues, dispatches messages to external commands based on header matching, and publishes results back to a response queue.
