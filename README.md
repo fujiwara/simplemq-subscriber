@@ -1,4 +1,4 @@
-**simplemq-subscriber is archived. renamed to [fujiwara/mqsubscriber](github.com/fujiwara/mqsubscriber).**
+**simplemq-subscriber is archived. renamed to [fujiwara/mqsubscriber](https://github.com/fujiwara/mqsubscriber).**
 
 ----
 
